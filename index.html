@@ -1106,6 +1106,7 @@ body {
         <button class="tab-btn active" onclick="switchContactTab('overview',this)">Overview</button>
         <button class="tab-btn" onclick="switchContactTab('deals',this)">Deals</button>
         <button class="tab-btn" onclick="switchContactTab('log',this)">Contact Log</button>
+        <button class="tab-btn" onclick="switchContactTab('score',this)">Score History</button>
       </div>
 
       <!-- OVERVIEW TAB -->
@@ -1129,6 +1130,8 @@ body {
           </div>
         </div>
         <div class="info-note" id="c-fitscore-note" style="margin-top:4px"></div>
+        <div class="section-title" style="margin-top:16px">Website activity</div>
+        <div class="body-sm" id="c-web-analytics" style="color:var(--text2);margin-top:4px">—</div>
       </div>
 
       <!-- DEALS TAB -->
@@ -1145,8 +1148,14 @@ body {
           <input class="input" id="c-log-note" placeholder="Call, site visit, coffee catch-up…">
         </div>
         <button class="btn btn-ghost btn-sm" onclick="logContactTouchpoint()" style="margin-bottom:14px">+ Log touchpoint</button>
-        <div class="section-title">Relationship timeline</div>
+        <div class="section-title">Relationship timeline <span class="body-sm" style="color:var(--text3);font-weight:500;text-transform:none">— manual notes + real HubSpot activity, merged</span></div>
         <div class="timeline" id="c-timeline"></div>
+      </div>
+
+      <!-- SCORE HISTORY TAB -->
+      <div class="tab-pane" id="ctab-score">
+        <div class="info-note" style="margin-top:14px">HubSpot's log of when the Fit Score changed, by how much, and what triggered it. Not a line-by-line "why" breakdown — that detail only exists if your workflow names make it obvious.</div>
+        <div class="timeline" id="c-score-timeline" style="margin-top:10px"></div>
       </div>
 
     </div>
@@ -1994,6 +2003,7 @@ function renderTeamList(){
 // ══════════════════════════════════════════════════════════════
 let appView = 'pipeline';
 let currentContactId = null;
+let currentContactTouchpoints = [];
 let contactSearchTimer = null;
 
 function debouncedContactSearch(){
@@ -2099,6 +2109,15 @@ async function openContactDetail(id){
     document.getElementById('c-fitscore-note').innerHTML =
       `Fit Score comes straight from HubSpot — it can't be edited here. <a href="https://app.hubspot.com/contacts/0/contact/${c.id}" target="_blank" rel="noopener">Open in HubSpot →</a>`;
 
+    const wa = c.webAnalytics || {};
+    if(wa.pageViews === null && wa.visits === null){
+      document.getElementById('c-web-analytics').textContent = 'No website tracking data on this contact (or analytics tracking isn\'t enabled for this portal).';
+    }else{
+      document.getElementById('c-web-analytics').innerHTML =
+        `${wa.pageViews ?? '—'} page views across ${wa.visits ?? '—'} visits` +
+        (wa.lastVisit ? ` · last seen ${fmtDate(wa.lastVisit.slice(0,10))}` : '');
+    }
+
     const dealsList = document.getElementById('c-deals-list');
     if(!c.deals || c.deals.length === 0){
       dealsList.innerHTML = '<div class="body-sm" style="color:var(--text3);padding:10px 0">No deals associated with this contact in HubSpot.</div>';
@@ -2113,7 +2132,9 @@ async function openContactDetail(id){
         </div>`).join('');
     }
 
-    renderContactTimeline(c.touchpoints || []);
+    currentContactTouchpoints = c.touchpoints || [];
+    renderContactTimeline(currentContactTouchpoints, c.hubspotActivity || []);
+    renderScoreHistory(c.fitScoreHistory || []);
     document.getElementById('c-log-date').value = todayISO();
     document.getElementById('c-log-note').value = '';
 
@@ -2133,19 +2154,45 @@ function switchContactTab(name, btn){
   scope.querySelector('#ctab-'+name).classList.add('active');
 }
 
-function renderContactTimeline(touchpoints){
+const ACTIVITY_ICON = { call: '📞', meeting: '🤝', email: '✉️', note: '📝' };
+
+function renderContactTimeline(touchpoints, hubspotActivity){
   const tl = document.getElementById('c-timeline');
-  const items = [...touchpoints].sort((a,b)=>b.date.localeCompare(a.date));
+  const local = touchpoints.map(t => ({
+    date: t.date, sortKey: t.date, label: 'You logged', text: t.note, icon: '',
+  }));
+  const remote = (hubspotActivity || []).map(a => ({
+    date: a.date.slice(0,10), sortKey: a.date, label: 'HubSpot', text: a.title + (a.detail ? ' — ' + a.detail : ''), icon: ACTIVITY_ICON[a.type] || '',
+  }));
+  const items = [...local, ...remote].sort((a,b)=>b.sortKey.localeCompare(a.sortKey));
+
   if(items.length === 0){
-    tl.innerHTML = '<div class="body-sm" style="color:var(--text3);padding:10px 0">No touchpoints logged yet.</div>';
+    tl.innerHTML = '<div class="body-sm" style="color:var(--text3);padding:10px 0">No touchpoints or HubSpot activity yet.</div>';
     return;
   }
   tl.innerHTML = items.map(t => `
     <div class="timeline-item">
       <div class="timeline-dot"></div>
       <div>
-        <div class="timeline-date">${fmtDate(t.date)}</div>
-        <div class="timeline-note">${esc(t.note)}</div>
+        <div class="timeline-date">${fmtDate(t.date)} <span class="body-sm" style="color:var(--text3);font-weight:500">· ${t.icon} ${t.label}</span></div>
+        <div class="timeline-note">${esc(t.text)}</div>
+      </div>
+    </div>`).join('');
+}
+
+function renderScoreHistory(history){
+  const tl = document.getElementById('c-score-timeline');
+  if(!history || history.length === 0){
+    tl.innerHTML = '<div class="body-sm" style="color:var(--text3);padding:10px 0">No score history available — either it hasn\'t changed, or HubSpot isn\'t returning history for this property.</div>';
+    return;
+  }
+  const sorted = [...history].sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
+  tl.innerHTML = sorted.map(h => `
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div>
+        <div class="timeline-date">${fmtDate(h.timestamp.slice(0,10))}</div>
+        <div class="timeline-note">Score set to <b>${esc(h.value)}</b> <span class="body-sm" style="color:var(--text3)">— ${esc(h.source)}</span></div>
       </div>
     </div>`).join('');
 }
@@ -2167,7 +2214,8 @@ async function logContactTouchpoint(){
     await apiFetch('/api/contacts/' + currentContactId + '/touchpoints', {method:'POST', body:{date, note}});
     document.getElementById('c-log-note').value = '';
     const c = await apiFetch('/api/contacts/' + currentContactId);
-    renderContactTimeline(c.touchpoints || []);
+    currentContactTouchpoints = c.touchpoints || [];
+    renderContactTimeline(currentContactTouchpoints, c.hubspotActivity || []);
     showToast('Touchpoint logged — added to your watchlist');
   }catch(e){ showToast('⚠ Could not log touchpoint — ' + e.message, 'red'); }
 }

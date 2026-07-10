@@ -296,6 +296,7 @@ body {
   border-radius: var(--r-md);
   padding: 4px;
 }
+.pill-sep { width: 1px; height: 18px; background: var(--b2); margin: 0 4px; flex-shrink: 0; }
 
 /* Content area */
 .content {
@@ -543,6 +544,8 @@ body {
 .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
 .badge-blue   { background: var(--blue-bg);   color: var(--blue); }
 .badge-neutral{ background: var(--surf3);     color: var(--text2); }
+.fitscore-badge { display:inline-flex; align-items:center; gap:6px; font-weight:700; font-size:var(--text-sm); }
+.fitscore-dot { width:8px; height:8px; border-radius:50%; }
 .status-dot {
   width: 6px; height: 6px;
   border-radius: 50%;
@@ -876,24 +879,26 @@ body {
     </div>
   </div>
 
-  <!-- SUBBAR / FILTERS -->
+  <!-- SUBBAR / FILTERS ─ single row, Contacts folded in as a view switch -->
   <div class="subbar">
     <span style="font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.09em;margin-right:2px">Filter</span>
     <div class="pill-group">
       <button class="pill active" data-filter="active" onclick="setFilter('active',this)">Inbox</button>
+      <button class="pill" data-filter="contacts" id="pill-contacts" onclick="setFilter('contacts',this)">Contacts</button>
+      <div class="pill-sep"></div>
       <button class="pill" data-filter="hot" onclick="setFilter('hot',this)"><span class="status-dot dot-red"></span><span>Hot</span></button>
       <button class="pill" data-filter="warm" onclick="setFilter('warm',this)"><span class="status-dot dot-orange"></span><span>Warm</span></button>
       <button class="pill" data-filter="cold" onclick="setFilter('cold',this)"><span class="status-dot dot-blue"></span><span>Cold</span></button>
       <button class="pill" data-filter="followup" onclick="setFilter('followup',this)">Follow-ups due</button>
-      <button class="pill" data-filter="sql" onclick="setFilter('sql',this)">Sent to HubSpot</button>
-      <button class="pill" data-filter="closed" onclick="setFilter('closed',this)">Closed</button>
+      <button class="pill" data-filter="archived" onclick="setFilter('archived',this)">Archived</button>
     </div>
     <div style="flex:1"></div>
     <span class="body-sm" id="app-date" style="color:var(--text3);white-space:nowrap;margin-right:10px"></span>
     <input class="input" id="search-input" placeholder="Search name, company, email…" style="max-width:240px;height:32px" oninput="render()">
+    <input class="input" id="contact-search-input" placeholder="Search HubSpot contacts…" style="max-width:240px;height:32px;display:none" oninput="debouncedContactSearch()">
   </div>
 
-  <div class="content">
+  <div class="content" id="content-pipeline">
 
     <div class="inbox-note" id="backend-warning" style="display:none;border-color:var(--orange);color:var(--text)">
       <svg viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
@@ -952,6 +957,104 @@ body {
       </div>
     </div>
 
+  </div>
+
+  <!-- CONTACTS VIEW -->
+  <div class="content" id="content-contacts" style="display:none">
+    <div class="inbox-note">
+      <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      HubSpot is the source of truth here — names, companies, Fit Score, and deals are pulled live. This tool only adds the "keep warm" layer: notes, last contact, and follow-up reminders.
+    </div>
+
+    <div id="contacts-list-wrap">
+      <div class="lead-table-wrap">
+        <table class="lead-table">
+          <thead>
+            <tr>
+              <th>Contact</th>
+              <th>Company</th>
+              <th>Fit Score</th>
+              <th>Last contact</th>
+              <th>Next follow-up</th>
+              <th style="text-align:right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="contacts-tbody"></tbody>
+        </table>
+        <div class="empty-state" id="contacts-empty-state" style="display:none">
+          <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+          <div class="body-md" id="contacts-empty-title">Your watchlist is empty</div>
+          <div class="body-sm" id="contacts-empty-sub">Search HubSpot above and log a touchpoint on someone to add them here.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ CONTACT DETAIL MODAL ══════════════════════ -->
+<div class="modal-overlay" id="modal-contact-detail">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="c-name">—</div>
+        <div class="lead-detail-meta" id="c-badges"></div>
+      </div>
+      <div class="btn-icon" onclick="closeModal('modal-contact-detail')"><svg viewBox="0 0 24 24"><line x1="4" y1="4" x2="20" y2="20"/><line x1="20" y1="4" x2="4" y2="20"/></svg></div>
+    </div>
+    <div class="modal-body">
+
+      <div class="tab-row">
+        <button class="tab-btn active" onclick="switchContactTab('overview',this)">Overview</button>
+        <button class="tab-btn" onclick="switchContactTab('deals',this)">Deals</button>
+        <button class="tab-btn" onclick="switchContactTab('log',this)">Contact Log</button>
+      </div>
+
+      <!-- OVERVIEW TAB -->
+      <div class="tab-pane active" id="ctab-overview">
+        <div class="detail-grid" style="margin-top:14px">
+          <div class="detail-field">
+            <label class="input-label">Email</label>
+            <div class="detail-field-value" id="c-email">—</div>
+          </div>
+          <div class="detail-field">
+            <label class="input-label">Phone</label>
+            <div class="detail-field-value" id="c-phone">—</div>
+          </div>
+          <div class="detail-field">
+            <label class="input-label">Job title</label>
+            <div class="detail-field-value" id="c-title">—</div>
+          </div>
+          <div class="detail-field">
+            <label class="input-label">Next follow-up</label>
+            <input class="input" type="date" id="c-followup" onchange="setContactFollowUp(this.value)">
+          </div>
+        </div>
+        <div class="info-note" id="c-fitscore-note" style="margin-top:4px"></div>
+      </div>
+
+      <!-- DEALS TAB -->
+      <div class="tab-pane" id="ctab-deals">
+        <div class="section-title" style="margin-top:14px">Deals in HubSpot</div>
+        <div id="c-deals-list" style="margin-top:8px"></div>
+      </div>
+
+      <!-- LOG TAB -->
+      <div class="tab-pane" id="ctab-log">
+        <div class="section-title" style="margin-top:14px">Log a touchpoint</div>
+        <div class="input-row" style="margin-bottom:8px">
+          <input class="input" type="date" id="c-log-date" style="max-width:160px">
+          <input class="input" id="c-log-note" placeholder="Call, site visit, coffee catch-up…">
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="logContactTouchpoint()" style="margin-bottom:14px">+ Log touchpoint</button>
+        <div class="section-title">Relationship timeline</div>
+        <div class="timeline" id="c-timeline"></div>
+      </div>
+
+    </div>
+    <div class="modal-footer" style="justify-content:space-between">
+      <button class="btn btn-ghost btn-sm" onclick="unpinCurrentContact()">Remove from watchlist</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-contact-detail')">Close</button>
+    </div>
   </div>
 </div>
 
@@ -1193,9 +1296,27 @@ document.querySelectorAll('.modal-overlay').forEach(el=>{
 
 // ── PILL FILTER (custom — filters are exclusive via setFilter) ──
 function setFilter(f, btn){
-  currentFilter = f;
   document.querySelectorAll('.subbar .pill').forEach(p=>p.classList.remove('active'));
   btn.classList.add('active');
+
+  if(f === 'contacts'){
+    appView = 'contacts';
+    document.getElementById('content-pipeline').style.display = 'none';
+    document.getElementById('content-contacts').style.display = 'block';
+    document.getElementById('search-input').style.display = 'none';
+    document.getElementById('contact-search-input').style.display = '';
+    document.getElementById('contact-search-input').value = '';
+    loadWatchlist();
+    return;
+  }
+
+  appView = 'pipeline';
+  document.getElementById('content-pipeline').style.display = 'block';
+  document.getElementById('content-contacts').style.display = 'none';
+  document.getElementById('search-input').style.display = '';
+  document.getElementById('contact-search-input').style.display = 'none';
+
+  currentFilter = f;
   render();
 }
 
@@ -1348,8 +1469,7 @@ function filteredLeads(){
       case 'warm':      return l.status === 'MQL' && l.temp === 'warm';
       case 'cold':      return l.status === 'MQL' && l.temp === 'cold';
       case 'followup':  return l.status === 'MQL' && (followUpState(l.nextFollowUp) === 'overdue' || followUpState(l.nextFollowUp) === 'today');
-      case 'sql':       return l.status === 'SQL';
-      case 'closed':    return l.status === 'Closed';
+      case 'archived':  return l.status === 'SQL' || l.status === 'Closed';
       default:          return true;
     }
   });
@@ -1772,6 +1892,201 @@ async function removeTeamMember(name){
     team = await apiFetch('/api/team/'+encodeURIComponent(name), {method:'DELETE'});
     renderTeamList();
     populateAssigneeSelects();
+  }catch(e){ showToast('⚠ Could not remove — ' + e.message, 'red'); }
+}
+
+// ══════════════════════════════════════════════════════════════
+// CONTACTS VIEW — HubSpot is the source of truth; this only adds
+// the local "keep warm" layer (last contact, follow-up, notes).
+// ══════════════════════════════════════════════════════════════
+let appView = 'pipeline';
+let currentContactId = null;
+let contactSearchTimer = null;
+
+function debouncedContactSearch(){
+  clearTimeout(contactSearchTimer);
+  contactSearchTimer = setTimeout(() => {
+    const q = document.getElementById('contact-search-input').value.trim();
+    if(q.length === 0){ loadWatchlist(); return; }
+    if(q.length < 2) return;
+    performContactSearch(q);
+  }, 350);
+}
+
+function fitScoreTier(score){
+  if(score === null || score === undefined) return { label: 'No score', color: 'var(--text3)' };
+  if(score >= 80) return { label: 'Key account', color: 'var(--green)' };
+  if(score >= 50) return { label: 'Core', color: 'var(--accent2)' };
+  return { label: 'Boutique', color: 'var(--text3)' };
+}
+
+function contactDisplayName(c){
+  const name = [c.firstName, c.lastName].filter(Boolean).join(' ');
+  return name || c.email || '(no name)';
+}
+
+async function performContactSearch(query){
+  try{
+    const results = await apiFetch('/api/contacts/search?q=' + encodeURIComponent(query));
+    renderContactRows(results, {
+      emptyTitle: 'No matches in HubSpot',
+      emptySub: 'Try a different name, company, or email.',
+    });
+  }catch(e){ showToast('⚠ Search failed — ' + e.message, 'red'); }
+}
+
+async function loadWatchlist(){
+  try{
+    const results = await apiFetch('/api/contacts/pinned');
+    renderContactRows(results, {
+      emptyTitle: 'Your watchlist is empty',
+      emptySub: 'Search HubSpot above and log a touchpoint on someone to add them here.',
+    });
+  }catch(e){ showToast('⚠ Could not load watchlist — ' + e.message, 'red'); }
+}
+
+function renderContactRows(contacts, emptyText){
+  const tbody = document.getElementById('contacts-tbody');
+  const empty = document.getElementById('contacts-empty-state');
+  if(!contacts || contacts.length === 0){
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    document.getElementById('contacts-empty-title').textContent = emptyText.emptyTitle;
+    document.getElementById('contacts-empty-sub').textContent = emptyText.emptySub;
+    return;
+  }
+  empty.style.display = 'none';
+  tbody.innerHTML = contacts.map(c => {
+    const tier = fitScoreTier(c.fitScore);
+    const rel = c.relationship || {};
+    const fState = followUpState(rel.next_follow_up);
+    const fLabel = rel.next_follow_up
+      ? (fState==='overdue' ? 'Overdue · '+fmtDate(rel.next_follow_up) : fState==='today' ? 'Today' : fmtDate(rel.next_follow_up))
+      : 'Not set';
+    return `
+      <tr>
+        <td>
+          <div class="lead-row-name" onclick="openContactDetail('${c.id}')">${esc(contactDisplayName(c))}</div>
+          <div class="lead-row-company">${esc(c.jobTitle || '—')}</div>
+        </td>
+        <td class="body-sm">${esc(c.company || '—')}</td>
+        <td>
+          <span class="fitscore-badge">
+            <span class="fitscore-dot" style="background:${tier.color}"></span>
+            ${c.fitScore !== null && c.fitScore !== undefined ? c.fitScore : '—'}
+            <span class="body-sm" style="color:var(--text3);font-weight:500;text-transform:none;">${tier.label}</span>
+          </span>
+        </td>
+        <td class="body-sm">${fmtDate(rel.last_contact)}</td>
+        <td><span class="followup-tag ${fState}">${fLabel}</span></td>
+        <td>
+          <div class="row-actions">
+            <button class="btn btn-ghost btn-sm" onclick="openContactDetail('${c.id}')">View</button>
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+async function openContactDetail(id){
+  currentContactId = id;
+  try{
+    const c = await apiFetch('/api/contacts/' + id);
+    const tier = fitScoreTier(c.fitScore);
+
+    document.getElementById('c-name').textContent = contactDisplayName(c);
+    document.getElementById('c-badges').innerHTML =
+      (c.company ? `<span class="badge badge-neutral">${esc(c.company)}</span>` : '') +
+      `<span class="badge" style="background:${tier.color}22;color:${tier.color}">Fit ${c.fitScore ?? '—'} · ${tier.label}</span>`;
+
+    document.getElementById('c-email').innerHTML = c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : '—';
+    document.getElementById('c-phone').innerHTML = c.phone ? `<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>` : '—';
+    document.getElementById('c-title').textContent = c.jobTitle || '—';
+    document.getElementById('c-followup').value = (c.relationship && c.relationship.next_follow_up) || '';
+    document.getElementById('c-fitscore-note').innerHTML =
+      `Fit Score comes straight from HubSpot — it can't be edited here. <a href="https://app.hubspot.com/contacts/0/contact/${c.id}" target="_blank" rel="noopener">Open in HubSpot →</a>`;
+
+    const dealsList = document.getElementById('c-deals-list');
+    if(!c.deals || c.deals.length === 0){
+      dealsList.innerHTML = '<div class="body-sm" style="color:var(--text3);padding:10px 0">No deals associated with this contact in HubSpot.</div>';
+    }else{
+      dealsList.innerHTML = c.deals.map(d => `
+        <div class="team-list-item" style="margin-bottom:6px">
+          <div>
+            <div style="font-weight:600">${esc(d.name)}</div>
+            <div class="body-sm" style="color:var(--text3)">${esc(d.stage || '—')}${d.closeDate ? ' · closes ' + fmtDate(d.closeDate.slice(0,10)) : ''}</div>
+          </div>
+          <div style="font-weight:700">${d.amount ? '$' + Number(d.amount).toLocaleString() : '—'}</div>
+        </div>`).join('');
+    }
+
+    renderContactTimeline(c.touchpoints || []);
+    document.getElementById('c-log-date').value = todayISO();
+    document.getElementById('c-log-note').value = '';
+
+    const modal = document.getElementById('modal-contact-detail');
+    modal.querySelectorAll('.tab-btn').forEach((b,i)=>b.classList.toggle('active', i===0));
+    modal.querySelectorAll('.tab-pane').forEach((p,i)=>p.classList.toggle('active', i===0));
+
+    openModal('modal-contact-detail');
+  }catch(e){ showToast('⚠ Could not load contact — ' + e.message, 'red'); }
+}
+
+function switchContactTab(name, btn){
+  const scope = btn.closest('.modal');
+  scope.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  scope.querySelectorAll('.tab-pane').forEach(p=>p.classList.remove('active'));
+  btn.classList.add('active');
+  scope.querySelector('#ctab-'+name).classList.add('active');
+}
+
+function renderContactTimeline(touchpoints){
+  const tl = document.getElementById('c-timeline');
+  const items = [...touchpoints].sort((a,b)=>b.date.localeCompare(a.date));
+  if(items.length === 0){
+    tl.innerHTML = '<div class="body-sm" style="color:var(--text3);padding:10px 0">No touchpoints logged yet.</div>';
+    return;
+  }
+  tl.innerHTML = items.map(t => `
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div>
+        <div class="timeline-date">${fmtDate(t.date)}</div>
+        <div class="timeline-note">${esc(t.note)}</div>
+      </div>
+    </div>`).join('');
+}
+
+async function setContactFollowUp(val){
+  if(!currentContactId) return;
+  try{
+    await apiFetch('/api/contacts/' + currentContactId + '/relationship', {method:'PATCH', body:{next_follow_up: val || null}});
+    showToast(val ? 'Follow-up set for ' + fmtDate(val) : 'Follow-up cleared');
+  }catch(e){ showToast('⚠ Could not save — ' + e.message, 'red'); }
+}
+
+async function logContactTouchpoint(){
+  if(!currentContactId) return;
+  const date = document.getElementById('c-log-date').value || todayISO();
+  const note = document.getElementById('c-log-note').value.trim();
+  if(!note){ showToast('Add a note about this touchpoint', 'red'); return; }
+  try{
+    await apiFetch('/api/contacts/' + currentContactId + '/touchpoints', {method:'POST', body:{date, note}});
+    document.getElementById('c-log-note').value = '';
+    const c = await apiFetch('/api/contacts/' + currentContactId);
+    renderContactTimeline(c.touchpoints || []);
+    showToast('Touchpoint logged — added to your watchlist');
+  }catch(e){ showToast('⚠ Could not log touchpoint — ' + e.message, 'red'); }
+}
+
+async function unpinCurrentContact(){
+  if(!currentContactId) return;
+  if(!confirm('Remove this contact from your watchlist? Their HubSpot record is untouched.')) return;
+  try{
+    await apiFetch('/api/contacts/' + currentContactId + '/relationship', {method:'DELETE'});
+    closeModal('modal-contact-detail');
+    loadWatchlist();
+    showToast('Removed from watchlist');
   }catch(e){ showToast('⚠ Could not remove — ' + e.message, 'red'); }
 }
 
